@@ -20,6 +20,18 @@ const RANDOM_FORCE_MAX_WAIT = 4.4;
 const DAMPING = 0.1;
 const MAX_SPEED = 200;
 const WALL_BOUNCE = 0.55;
+const PLAYER_SIZE = 54;
+const PLAYER_SPEED = 420;
+const PLAYER_PUSH_SHARE = 0.8;
+
+const keys = new Set();
+
+const player = {
+  x: CENTER_X - PLAYER_SIZE / 2,
+  y: CENTER_Y + 180,
+  width: PLAYER_SIZE,
+  height: PLAYER_SIZE,
+};
 
 const entities = Array.from({ length: ENTITY_COUNT }, (_, index) => {
   const angle = goldenAngle(index);
@@ -43,11 +55,21 @@ const entities = Array.from({ length: ENTITY_COUNT }, (_, index) => {
 
 let lastTime = performance.now();
 
+window.addEventListener("keydown", (event) => {
+  keys.add(event.key.toLowerCase());
+});
+
+window.addEventListener("keyup", (event) => {
+  keys.delete(event.key.toLowerCase());
+});
+
 function update(deltaSeconds) {
   resetAccelerations();
   applyRepulsion();
   updateRandomForces(deltaSeconds);
+  updatePlayer(deltaSeconds);
   integrateEntities(deltaSeconds);
+  resolvePlayerEntityCollisions();
 }
 
 function resetAccelerations() {
@@ -118,6 +140,35 @@ function startRandomForce(entity) {
   entity.forceWait = randomRange(RANDOM_FORCE_MIN_WAIT, RANDOM_FORCE_MAX_WAIT);
 }
 
+function updatePlayer(deltaSeconds) {
+  let moveX = 0;
+  let moveY = 0;
+
+  if (keys.has("arrowleft") || keys.has("a")) {
+    moveX -= 1;
+  }
+
+  if (keys.has("arrowright") || keys.has("d")) {
+    moveX += 1;
+  }
+
+  if (keys.has("arrowup") || keys.has("w")) {
+    moveY -= 1;
+  }
+
+  if (keys.has("arrowdown") || keys.has("s")) {
+    moveY += 1;
+  }
+
+  if (moveX !== 0 || moveY !== 0) {
+    const length = Math.hypot(moveX, moveY);
+    player.x += (moveX / length) * PLAYER_SPEED * deltaSeconds;
+    player.y += (moveY / length) * PLAYER_SPEED * deltaSeconds;
+  }
+
+  clampPlayerToWalls();
+}
+
 function integrateEntities(deltaSeconds) {
   const dampingThisFrame = DAMPING ** deltaSeconds;
 
@@ -139,6 +190,57 @@ function integrateEntities(deltaSeconds) {
 
     resolveWallBounce(entity);
   }
+}
+
+function resolvePlayerEntityCollisions() {
+  for (const entity of entities) {
+    const closestX = clamp(entity.x, player.x, player.x + player.width);
+    const closestY = clamp(entity.y, player.y, player.y + player.height);
+    let dx = entity.x - closestX;
+    let dy = entity.y - closestY;
+    let distance = Math.hypot(dx, dy);
+
+    if (distance >= ENTITY_RADIUS) {
+      continue;
+    }
+
+    if (distance === 0) {
+      dx = entity.x - (player.x + player.width / 2);
+      dy = entity.y - (player.y + player.height / 2);
+      distance = Math.hypot(dx, dy);
+
+      if (distance === 0) {
+        dx = 1;
+        dy = 0;
+        distance = 1;
+      }
+    }
+
+    const normalX = dx / distance;
+    const normalY = dy / distance;
+    const overlap = ENTITY_RADIUS - distance;
+    const playerPush = overlap * PLAYER_PUSH_SHARE;
+    const entityPush = overlap - playerPush;
+
+    player.x -= normalX * playerPush;
+    player.y -= normalY * playerPush;
+    entity.x += normalX * entityPush;
+    entity.y += normalY * entityPush;
+
+    const velocityIntoPlayer = entity.vx * -normalX + entity.vy * -normalY;
+    if (velocityIntoPlayer > 0) {
+      player.x -= normalX * Math.min(velocityIntoPlayer * 0.025, ENTITY_RADIUS);
+      player.y -= normalY * Math.min(velocityIntoPlayer * 0.025, ENTITY_RADIUS);
+    }
+
+    clampPlayerToWalls();
+    resolveWallBounce(entity);
+  }
+}
+
+function clampPlayerToWalls() {
+  player.x = clamp(player.x, 0, GAME_WIDTH - player.width);
+  player.y = clamp(player.y, 0, GAME_HEIGHT - player.height);
 }
 
 function resolveWallBounce(entity) {
@@ -165,6 +267,7 @@ function draw() {
   drawBackground();
   drawRepelRanges();
   drawEntities();
+  drawPlayer();
 }
 
 function drawBackground() {
@@ -199,8 +302,21 @@ function drawEntities() {
   }
 }
 
+function drawPlayer() {
+  ctx.fillStyle = "#f6c95f";
+  ctx.fillRect(player.x, player.y, player.width, player.height);
+
+  ctx.strokeStyle = "#fff6d5";
+  ctx.lineWidth = 5;
+  ctx.strokeRect(player.x, player.y, player.width, player.height);
+}
+
 function randomRange(min, max) {
   return min + Math.random() * (max - min);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function goldenAngle(index) {
