@@ -6,7 +6,7 @@ const GAME_HEIGHT = 1080;
 const CENTER_X = GAME_WIDTH / 2;
 const CENTER_Y = GAME_HEIGHT / 2;
 
-const ENTITY_COUNT = 12;
+const ENTITY_COUNT = 45;
 const ENTITY_RADIUS = 18;
 const SPAWN_RADIUS = ENTITY_RADIUS * 2;
 const REPEL_RADIUS = ENTITY_RADIUS * 1.8;
@@ -24,6 +24,9 @@ const PLAYER_SIZE = 54;
 const PLAYER_SPEED = 420;
 const PLAYER_PUSH_SHARE = 0.68;
 const GRASS_COLOR = "#3c8f3d";
+const WATER_WIDTH = 96;
+const WATER_COLOR = "#286fbb";
+const WATER_EDGE_COLOR = "#174d86";
 
 const keys = new Set();
 
@@ -70,6 +73,7 @@ function update(deltaSeconds) {
   updateRandomForces(deltaSeconds);
   updatePlayer(deltaSeconds);
   integrateEntities(deltaSeconds);
+  removeEntitiesInWater();
   resolvePlayerEntityCollisions();
 }
 
@@ -239,6 +243,16 @@ function resolvePlayerEntityCollisions() {
   }
 }
 
+function removeEntitiesInWater() {
+  for (let i = entities.length - 1; i >= 0; i -= 1) {
+    const entity = entities[i];
+
+    if (isInWater(entity.x, entity.y, ENTITY_RADIUS)) {
+      entities.splice(i, 1);
+    }
+  }
+}
+
 function clampPlayerToWalls() {
   player.x = clamp(player.x, 0, GAME_WIDTH - player.width);
   player.y = clamp(player.y, 0, GAME_HEIGHT - player.height);
@@ -275,9 +289,23 @@ function drawBackground() {
   ctx.fillStyle = GRASS_COLOR;
   ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
+  drawWaterMoat();
+
   ctx.strokeStyle = "#283142";
   ctx.lineWidth = 6;
   ctx.strokeRect(3, 3, GAME_WIDTH - 6, GAME_HEIGHT - 6);
+}
+
+function drawWaterMoat() {
+  ctx.fillStyle = WATER_COLOR;
+  ctx.fillRect(0, 0, GAME_WIDTH, WATER_WIDTH);
+  ctx.fillRect(0, GAME_HEIGHT - WATER_WIDTH, GAME_WIDTH, WATER_WIDTH);
+  ctx.fillRect(0, WATER_WIDTH, WATER_WIDTH, GAME_HEIGHT - WATER_WIDTH * 2);
+  ctx.fillRect(GAME_WIDTH - WATER_WIDTH, WATER_WIDTH, WATER_WIDTH, GAME_HEIGHT - WATER_WIDTH * 2);
+
+  ctx.strokeStyle = WATER_EDGE_COLOR;
+  ctx.lineWidth = 5;
+  ctx.strokeRect(WATER_WIDTH, WATER_WIDTH, GAME_WIDTH - WATER_WIDTH * 2, GAME_HEIGHT - WATER_WIDTH * 2);
 }
 
 function drawRepelRanges() {
@@ -318,6 +346,15 @@ function randomRange(min, max) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function isInWater(x, y, radius) {
+  return (
+    x - radius < WATER_WIDTH ||
+    x + radius > GAME_WIDTH - WATER_WIDTH ||
+    y - radius < WATER_WIDTH ||
+    y + radius > GAME_HEIGHT - WATER_WIDTH
+  );
 }
 
 function goldenAngle(index) {
