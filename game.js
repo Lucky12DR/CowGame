@@ -6,10 +6,10 @@ const GAME_HEIGHT = 1080;
 const CENTER_X = GAME_WIDTH / 2;
 const CENTER_Y = GAME_HEIGHT / 2;
 
-const ENTITY_COUNT = 24;
+const ENTITY_COUNT = 12;
 const ENTITY_RADIUS = 18;
 const SPAWN_RADIUS = ENTITY_RADIUS * 2;
-const REPEL_RADIUS = ENTITY_RADIUS * 1.6;
+const REPEL_RADIUS = ENTITY_RADIUS * 1.8;
 const REPEL_FORCE = 26000;
 const RANDOM_FORCE_MIN = 460;
 const RANDOM_FORCE_MAX = 960;
@@ -22,7 +22,8 @@ const MAX_SPEED = 200;
 const WALL_BOUNCE = 0.55;
 const PLAYER_SIZE = 54;
 const PLAYER_SPEED = 420;
-const PLAYER_PUSH_SHARE = 0.8;
+const PLAYER_PUSH_SHARE = 0.68;
+const GRASS_COLOR = "#3c8f3d";
 
 const keys = new Set();
 
@@ -271,7 +272,7 @@ function draw() {
 }
 
 function drawBackground() {
-  ctx.fillStyle = "#05070b";
+  ctx.fillStyle = GRASS_COLOR;
   ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
   ctx.strokeStyle = "#283142";
