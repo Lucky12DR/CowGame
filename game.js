@@ -27,6 +27,13 @@ const GRASS_COLOR = "#3c8f3d";
 const WATER_WIDTH = 96;
 const WATER_COLOR = "#286fbb";
 const WATER_EDGE_COLOR = "#174d86";
+const FENCE_NODE_RADIUS = 13;
+const FENCE_BUILD_TIME = 1.1;
+const FENCE_PLAYER_CLEARANCE = 10;
+const FENCE_MOVE_CANCEL_DISTANCE = 1;
+const FENCE_NODE_COLOR = "#8a542d";
+const FENCE_LINE_COLOR = "#6d3f20";
+const FENCE_GHOST_ALPHA = 0.45;
 
 const keys = new Set();
 
@@ -35,6 +42,13 @@ const player = {
   y: CENTER_Y + 180,
   width: PLAYER_SIZE,
   height: PLAYER_SIZE,
+};
+
+const fence = {
+  buildMode: false,
+  chains: [],
+  currentNodes: [],
+  activeBuild: null,
 };
 
 const entities = Array.from({ length: ENTITY_COUNT }, (_, index) => {
@@ -60,11 +74,24 @@ const entities = Array.from({ length: ENTITY_COUNT }, (_, index) => {
 let lastTime = performance.now();
 
 window.addEventListener("keydown", (event) => {
+  if (event.key.toLowerCase() === "e" && !event.repeat) {
+    toggleFenceBuildMode();
+    return;
+  }
+
   keys.add(event.key.toLowerCase());
 });
 
 window.addEventListener("keyup", (event) => {
   keys.delete(event.key.toLowerCase());
+});
+
+canvas.addEventListener("mousedown", (event) => {
+  if (event.button !== 0 || !fence.buildMode || fence.activeBuild) {
+    return;
+  }
+
+  startFenceBuild();
 });
 
 function update(deltaSeconds) {
@@ -73,8 +100,10 @@ function update(deltaSeconds) {
   updateRandomForces(deltaSeconds);
   updatePlayer(deltaSeconds);
   integrateEntities(deltaSeconds);
+  resolveFenceEntityCollisions();
   removeEntitiesInWater();
   resolvePlayerEntityCollisions();
+  updateFenceBuild(deltaSeconds);
 }
 
 function resetAccelerations() {
@@ -166,6 +195,10 @@ function updatePlayer(deltaSeconds) {
   }
 
   if (moveX !== 0 || moveY !== 0) {
+    if (fence.activeBuild) {
+      cancelFenceBuild();
+    }
+
     const length = Math.hypot(moveX, moveY);
     player.x += (moveX / length) * PLAYER_SPEED * deltaSeconds;
     player.y += (moveY / length) * PLAYER_SPEED * deltaSeconds;
@@ -253,6 +286,149 @@ function removeEntitiesInWater() {
   }
 }
 
+function toggleFenceBuildMode() {
+  fence.activeBuild = null;
+
+  if (fence.buildMode) {
+    fence.buildMode = false;
+    fence.currentNodes = [];
+    return;
+  }
+
+  fence.buildMode = true;
+  fence.currentNodes = [];
+}
+
+function startFenceBuild() {
+  const node = {
+    x: player.x + player.width / 2,
+    y: player.y + player.height / 2,
+  };
+
+  movePlayerAwayFromFenceNode(node);
+
+  fence.activeBuild = {
+    x: node.x,
+    y: node.y,
+    progress: 0,
+    lockedPlayerX: player.x,
+    lockedPlayerY: player.y,
+  };
+}
+
+function updateFenceBuild(deltaSeconds) {
+  if (!fence.activeBuild) {
+    return;
+  }
+
+  const playerMoved = Math.hypot(
+    player.x - fence.activeBuild.lockedPlayerX,
+    player.y - fence.activeBuild.lockedPlayerY,
+  );
+
+  if (playerMoved > FENCE_MOVE_CANCEL_DISTANCE) {
+    cancelFenceBuild();
+    return;
+  }
+
+  fence.activeBuild.progress = Math.min(1, fence.activeBuild.progress + deltaSeconds / FENCE_BUILD_TIME);
+
+  if (fence.activeBuild.progress >= 1) {
+    finishFenceBuild();
+  }
+}
+
+function finishFenceBuild() {
+  const node = {
+    x: fence.activeBuild.x,
+    y: fence.activeBuild.y,
+  };
+
+  if (fence.currentNodes.length === 0) {
+    fence.chains.push(fence.currentNodes);
+  }
+
+  fence.currentNodes.push(node);
+  fence.activeBuild = null;
+}
+
+function cancelFenceBuild() {
+  fence.activeBuild = null;
+}
+
+function movePlayerAwayFromFenceNode(node) {
+  const gap = FENCE_NODE_RADIUS + FENCE_PLAYER_CLEARANCE;
+  const candidates = [
+    { x: node.x + gap, y: node.y - player.height / 2 },
+    { x: node.x - gap - player.width, y: node.y - player.height / 2 },
+    { x: node.x - player.width / 2, y: node.y + gap },
+    { x: node.x - player.width / 2, y: node.y - gap - player.height },
+  ];
+
+  for (const candidate of candidates) {
+    const clampedX = clamp(candidate.x, 0, GAME_WIDTH - player.width);
+    const clampedY = clamp(candidate.y, 0, GAME_HEIGHT - player.height);
+
+    if (!circleIntersectsRect(node.x, node.y, FENCE_NODE_RADIUS, clampedX, clampedY, player.width, player.height)) {
+      player.x = clampedX;
+      player.y = clampedY;
+      return;
+    }
+  }
+
+  player.x = clamp(node.x + gap, 0, GAME_WIDTH - player.width);
+  player.y = clamp(node.y - player.height / 2, 0, GAME_HEIGHT - player.height);
+}
+
+function resolveFenceEntityCollisions() {
+  for (const entity of entities) {
+    for (const chain of fence.chains) {
+      for (let i = 0; i < chain.length - 1; i += 1) {
+        resolveEntityFenceSegmentCollision(entity, chain[i], chain[i + 1]);
+      }
+    }
+  }
+}
+
+function resolveEntityFenceSegmentCollision(entity, from, to) {
+  const closest = closestPointOnSegment(entity.x, entity.y, from, to);
+  let normalX = entity.x - closest.x;
+  let normalY = entity.y - closest.y;
+  let distance = Math.hypot(normalX, normalY);
+
+  if (distance >= ENTITY_RADIUS) {
+    return;
+  }
+
+  if (distance === 0) {
+    const segmentX = to.x - from.x;
+    const segmentY = to.y - from.y;
+    const segmentLength = Math.hypot(segmentX, segmentY) || 1;
+    normalX = -segmentY / segmentLength;
+    normalY = segmentX / segmentLength;
+
+    if (entity.vx * normalX + entity.vy * normalY > 0) {
+      normalX *= -1;
+      normalY *= -1;
+    }
+
+    distance = 1;
+  } else {
+    normalX /= distance;
+    normalY /= distance;
+  }
+
+  const overlap = ENTITY_RADIUS - distance;
+  entity.x += normalX * overlap;
+  entity.y += normalY * overlap;
+
+  const velocityIntoFence = entity.vx * normalX + entity.vy * normalY;
+  if (velocityIntoFence < 0) {
+    entity.vx -= 2 * velocityIntoFence * normalX;
+    entity.vy -= 2 * velocityIntoFence * normalY;
+  }
+}
+
 function clampPlayerToWalls() {
   player.x = clamp(player.x, 0, GAME_WIDTH - player.width);
   player.y = clamp(player.y, 0, GAME_HEIGHT - player.height);
@@ -281,6 +457,7 @@ function draw() {
 
   drawBackground();
   drawRepelRanges();
+  drawFences();
   drawEntities();
   drawPlayer();
 }
@@ -331,6 +508,81 @@ function drawEntities() {
   }
 }
 
+function drawFences() {
+  ctx.lineCap = "round";
+
+  ctx.strokeStyle = FENCE_LINE_COLOR;
+  ctx.lineWidth = 8;
+  for (const chain of fence.chains) {
+    drawFenceChain(chain);
+  }
+
+  if (fence.buildMode && fence.currentNodes.length > 0) {
+    const from = fence.currentNodes[fence.currentNodes.length - 1];
+    const to = fence.activeBuild || {
+      x: player.x + player.width / 2,
+      y: player.y + player.height / 2,
+    };
+
+    ctx.save();
+    ctx.globalAlpha = FENCE_GHOST_ALPHA;
+    ctx.strokeStyle = FENCE_LINE_COLOR;
+    ctx.lineWidth = 8;
+    drawFenceLine(from, to);
+    ctx.restore();
+  }
+
+  for (const chain of fence.chains) {
+    for (const node of chain) {
+      drawFenceNode(node, 1);
+    }
+  }
+
+  if (fence.activeBuild) {
+    drawFenceNode(fence.activeBuild, FENCE_GHOST_ALPHA);
+    drawFenceProgressBar(fence.activeBuild);
+  }
+}
+
+function drawFenceChain(chain) {
+  for (let i = 0; i < chain.length - 1; i += 1) {
+    drawFenceLine(chain[i], chain[i + 1]);
+  }
+}
+
+function drawFenceLine(from, to) {
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+}
+
+function drawFenceNode(node, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, FENCE_NODE_RADIUS, 0, Math.PI * 2);
+  ctx.fillStyle = FENCE_NODE_COLOR;
+  ctx.fill();
+  ctx.strokeStyle = "#111111";
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawFenceProgressBar(node) {
+  const width = 54;
+  const height = 8;
+  const x = node.x - width / 2;
+  const y = node.y - FENCE_NODE_RADIUS - 18;
+
+  ctx.fillStyle = "#111111";
+  ctx.fillRect(x, y, width, height);
+
+  ctx.fillStyle = "#f1d16b";
+  ctx.fillRect(x + 2, y + 2, (width - 4) * node.progress, height - 4);
+}
+
 function drawPlayer() {
   ctx.fillStyle = "#f6c95f";
   ctx.fillRect(player.x, player.y, player.width, player.height);
@@ -355,6 +607,29 @@ function isInWater(x, y, radius) {
     y - radius < WATER_WIDTH ||
     y + radius > GAME_HEIGHT - WATER_WIDTH
   );
+}
+
+function circleIntersectsRect(circleX, circleY, radius, rectX, rectY, rectWidth, rectHeight) {
+  const closestX = clamp(circleX, rectX, rectX + rectWidth);
+  const closestY = clamp(circleY, rectY, rectY + rectHeight);
+  return Math.hypot(circleX - closestX, circleY - closestY) < radius;
+}
+
+function closestPointOnSegment(x, y, from, to) {
+  const segmentX = to.x - from.x;
+  const segmentY = to.y - from.y;
+  const lengthSquared = segmentX * segmentX + segmentY * segmentY;
+
+  if (lengthSquared === 0) {
+    return { x: from.x, y: from.y };
+  }
+
+  const amount = clamp(((x - from.x) * segmentX + (y - from.y) * segmentY) / lengthSquared, 0, 1);
+
+  return {
+    x: from.x + segmentX * amount,
+    y: from.y + segmentY * amount,
+  };
 }
 
 function goldenAngle(index) {
