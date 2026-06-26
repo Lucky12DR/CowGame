@@ -6,7 +6,7 @@ const GAME_HEIGHT = 1080;
 const CENTER_X = GAME_WIDTH / 2;
 const CENTER_Y = GAME_HEIGHT / 2;
 
-const ENTITY_COUNT = 45;
+const ENTITY_COUNT = 24;
 const ENTITY_RADIUS = 18;
 const SPAWN_RADIUS = ENTITY_RADIUS * 2;
 const REPEL_RADIUS = ENTITY_RADIUS * 1.8;
@@ -27,15 +27,37 @@ const GRASS_COLOR = "#3c8f3d";
 const WATER_WIDTH = 96;
 const WATER_COLOR = "#286fbb";
 const WATER_EDGE_COLOR = "#174d86";
-const FENCE_NODE_RADIUS = 13;
-const FENCE_BUILD_TIME = 1.1;
+const FENCE_NODE_RADIUS = 8;
+const FENCE_BUILD_TIME = 6.5;
+const FENCE_MAX_LINK_DISTANCE = 260;
 const FENCE_PLAYER_CLEARANCE = 10;
 const FENCE_MOVE_CANCEL_DISTANCE = 1;
 const FENCE_NODE_COLOR = "#8a542d";
 const FENCE_LINE_COLOR = "#6d3f20";
 const FENCE_GHOST_ALPHA = 0.45;
+const SOUND_ENABLED = true;
+const SOUND_PITCH_VARIATION = 0.3;
+const COW_IMPACT_VOLUME = 1.0;
+const COW_HURT_VOLUME = 1.0;
+const COW_HURT_CHANCE = 0.8;
+const COW_DEATH_VOLUME = 1.0;
+const COW_HURT_COOLDOWN = 0.28;
+const COW_BUMP_DISTANCE = ENTITY_RADIUS * 2.1;
+const COW_BUMP_MIN_SPEED = 95;
+const FENCE_HURT_MIN_SPEED = 80;
 
 const keys = new Set();
+const sounds = {
+  cowDeath: new Audio("SFX/cow_death.wav"),
+  cowHurt: new Audio("SFX/cow_hurt.wav"),
+  cowImpact: new Audio("SFX/impact.wav"),
+  fenceBreaks: [
+    new Audio("SFX/break_1.wav"),
+    new Audio("SFX/break_2.wav"),
+    new Audio("SFX/break_3.wav"),
+    new Audio("SFX/break_4.wav"),
+  ],
+};
 
 const player = {
   x: CENTER_X - PLAYER_SIZE / 2,
@@ -67,6 +89,7 @@ const entities = Array.from({ length: ENTITY_COUNT }, (_, index) => {
     forceY: 0,
     forceTimeLeft: 0,
     forceWait: randomRange(0, RANDOM_FORCE_MAX_WAIT),
+    hurtCooldown: 0,
     hue: 165 + index * 9,
   };
 });
@@ -101,9 +124,11 @@ function update(deltaSeconds) {
   updatePlayer(deltaSeconds);
   integrateEntities(deltaSeconds);
   resolveFenceEntityCollisions();
+  resolveEntityBumpSounds();
   removeEntitiesInWater();
   resolvePlayerEntityCollisions();
   updateFenceBuild(deltaSeconds);
+  updateSoundCooldowns(deltaSeconds);
 }
 
 function resetAccelerations() {
@@ -281,6 +306,7 @@ function removeEntitiesInWater() {
     const entity = entities[i];
 
     if (isInWater(entity.x, entity.y, ENTITY_RADIUS)) {
+      playSound(sounds.cowDeath, COW_DEATH_VOLUME);
       entities.splice(i, 1);
     }
   }
@@ -300,10 +326,11 @@ function toggleFenceBuildMode() {
 }
 
 function startFenceBuild() {
-  const node = {
-    x: player.x + player.width / 2,
-    y: player.y + player.height / 2,
-  };
+  const node = getPlayerCenter();
+
+  if (!canConnectFenceNode(node)) {
+    fence.currentNodes = [];
+  }
 
   movePlayerAwayFromFenceNode(node);
 
@@ -424,8 +451,45 @@ function resolveEntityFenceSegmentCollision(entity, from, to) {
 
   const velocityIntoFence = entity.vx * normalX + entity.vy * normalY;
   if (velocityIntoFence < 0) {
+    const impactSpeed = Math.abs(velocityIntoFence);
     entity.vx -= 2 * velocityIntoFence * normalX;
     entity.vy -= 2 * velocityIntoFence * normalY;
+
+    if (impactSpeed >= FENCE_HURT_MIN_SPEED) {
+      playRandomSound(sounds.fenceBreaks, COW_HURT_VOLUME);
+    }
+  }
+}
+
+function resolveEntityBumpSounds() {
+  for (let a = 0; a < entities.length; a += 1) {
+    for (let b = a + 1; b < entities.length; b += 1) {
+      const first = entities[a];
+      const second = entities[b];
+      const dx = second.x - first.x;
+      const dy = second.y - first.y;
+      const distance = Math.hypot(dx, dy);
+
+      if (distance === 0 || distance > COW_BUMP_DISTANCE) {
+        continue;
+      }
+
+      const normalX = dx / distance;
+      const normalY = dy / distance;
+      const relativeVx = second.vx - first.vx;
+      const relativeVy = second.vy - first.vy;
+      const closingSpeed = -(relativeVx * normalX + relativeVy * normalY);
+
+      if (closingSpeed >= COW_BUMP_MIN_SPEED) {
+        playCowCollisionSound(first, second);
+      }
+    }
+  }
+}
+
+function updateSoundCooldowns(deltaSeconds) {
+  for (const entity of entities) {
+    entity.hurtCooldown = Math.max(0, entity.hurtCooldown - deltaSeconds);
   }
 }
 
@@ -517,18 +581,16 @@ function drawFences() {
     drawFenceChain(chain);
   }
 
-  if (fence.buildMode && fence.currentNodes.length > 0) {
+  const previewNode = fence.activeBuild || getPlayerCenter();
+
+  if (fence.buildMode && fence.currentNodes.length > 0 && canConnectFenceNode(previewNode)) {
     const from = fence.currentNodes[fence.currentNodes.length - 1];
-    const to = fence.activeBuild || {
-      x: player.x + player.width / 2,
-      y: player.y + player.height / 2,
-    };
 
     ctx.save();
     ctx.globalAlpha = FENCE_GHOST_ALPHA;
     ctx.strokeStyle = FENCE_LINE_COLOR;
     ctx.lineWidth = 8;
-    drawFenceLine(from, to);
+    drawFenceLine(from, previewNode);
     ctx.restore();
   }
 
@@ -583,6 +645,22 @@ function drawFenceProgressBar(node) {
   ctx.fillRect(x + 2, y + 2, (width - 4) * node.progress, height - 4);
 }
 
+function canConnectFenceNode(node) {
+  if (fence.currentNodes.length === 0) {
+    return true;
+  }
+
+  const lastNode = fence.currentNodes[fence.currentNodes.length - 1];
+  return Math.hypot(node.x - lastNode.x, node.y - lastNode.y) <= FENCE_MAX_LINK_DISTANCE;
+}
+
+function getPlayerCenter() {
+  return {
+    x: player.x + player.width / 2,
+    y: player.y + player.height / 2,
+  };
+}
+
 function drawPlayer() {
   ctx.fillStyle = "#f6c95f";
   ctx.fillRect(player.x, player.y, player.width, player.height);
@@ -598,6 +676,37 @@ function randomRange(min, max) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function playCowCollisionSound(first, second) {
+  if (first.hurtCooldown > 0 || second.hurtCooldown > 0) {
+    return;
+  }
+
+  first.hurtCooldown = COW_HURT_COOLDOWN;
+  second.hurtCooldown = COW_HURT_COOLDOWN;
+
+  if (Math.random() < COW_HURT_CHANCE) {
+    playSound(sounds.cowHurt, COW_HURT_VOLUME);
+  } else {
+    playSound(sounds.cowImpact, COW_IMPACT_VOLUME);
+  }
+}
+
+function playSound(sound, volume) {
+  if (!SOUND_ENABLED) {
+    return;
+  }
+
+  const instance = sound.cloneNode();
+  instance.volume = volume;
+  instance.playbackRate = randomRange(1 - SOUND_PITCH_VARIATION, 1 + SOUND_PITCH_VARIATION);
+  instance.play().catch(() => {});
+}
+
+function playRandomSound(soundPool, volume) {
+  const sound = soundPool[Math.floor(Math.random() * soundPool.length)];
+  playSound(sound, volume);
 }
 
 function isInWater(x, y, radius) {
